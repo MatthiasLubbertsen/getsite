@@ -4,6 +4,47 @@ const octokit = new Octokit({
   auth: process.env.GITHUB_TOKEN,
 });
 
+// Helper function voor file upload met retry logic
+async function uploadFileWithRetry(octokit, fileData, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // Probeer eerst het bestand op te halen om de SHA te krijgen (voor updates)
+      let sha = null;
+      try {
+        const { data: existingFile } = await octokit.rest.repos.getContent({
+          owner: fileData.owner,
+          repo: fileData.repo,
+          path: fileData.path,
+          ref: fileData.branch,
+        });
+        sha = existingFile.sha;
+      } catch (error) {
+        // Bestand bestaat niet, dat is prima voor een nieuwe file
+        if (error.status !== 404) {
+          throw error;
+        }
+      }
+
+      // Upload het bestand (met SHA als het al bestaat)
+      const uploadData = { ...fileData };
+      if (sha) {
+        uploadData.sha = sha;
+      }
+
+      return await octokit.rest.repos.createOrUpdateFileContents(uploadData);
+    } catch (error) {
+      console.log(`Upload attempt ${attempt} failed for ${fileData.path}:`, error.message);
+      
+      if (attempt === maxRetries) {
+        throw error;
+      }
+      
+      // Wacht even voordat we het opnieuw proberen
+      await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+    }
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -26,20 +67,36 @@ export default async function handler(req, res) {
     const branch = process.env.GITHUB_BRANCH || 'main';
 
     // Check of de pagina al bestaat
+    let existingMetadata = null;
+    let existingHtml = null;
+    
     try {
-      await octokit.rest.repos.getContent({
-        owner,
-        repo,
-        path: `${pageName}/metadata.json`,
-        ref: branch,
-      });
+      const [metadataResponse, htmlResponse] = await Promise.allSettled([
+        octokit.rest.repos.getContent({
+          owner,
+          repo,
+          path: `${pageName}/metadata.json`,
+          ref: branch,
+        }),
+        octokit.rest.repos.getContent({
+          owner,
+          repo,
+          path: `${pageName}/code.html`,
+          ref: branch,
+        })
+      ]);
       
-      return res.status(409).json({ error: 'Deze pagina naam bestaat al' });
-    } catch (error) {
-      // Pagina bestaat niet, dat is goed
-      if (error.status !== 404) {
-        throw error;
+      if (metadataResponse.status === 'fulfilled') {
+        existingMetadata = metadataResponse.value.data;
+        return res.status(409).json({ error: 'Deze pagina naam bestaat al' });
       }
+      
+      if (htmlResponse.status === 'fulfilled') {
+        existingHtml = htmlResponse.value.data;
+      }
+    } catch (error) {
+      // Bestanden bestaan niet, dat is wat we willen
+      console.log('No existing files found, proceeding with creation');
     }
 
     // Maak metadata.json
@@ -90,29 +147,40 @@ export default async function handler(req, res) {
 </body>
 </html>`;
 
-    // Upload beide bestanden naar GitHub
-    const promises = [
-      // Upload metadata.json
-      octokit.rest.repos.createOrUpdateFileContents({
-        owner,
-        repo,
-        path: `${pageName}/metadata.json`,
-        message: `Add metadata for page: ${pageName}`,
-        content: Buffer.from(JSON.stringify(metadata, null, 2)).toString('base64'),
-        branch,
-      }),
-      // Upload code.html
-      octokit.rest.repos.createOrUpdateFileContents({
-        owner,
-        repo,
-        path: `${pageName}/code.html`,
-        message: `Add HTML content for page: ${pageName}`,
-        content: Buffer.from(htmlContent).toString('base64'),
-        branch,
-      }),
-    ];
+    // Upload beide bestanden naar GitHub met retry logic
+    const uploadPromises = [];
 
-    await Promise.all(promises);
+    // Upload metadata.json
+    uploadPromises.push(
+      uploadFileWithRetry(
+        octokit,
+        {
+          owner,
+          repo,
+          path: `${pageName}/metadata.json`,
+          message: `Add metadata for page: ${pageName}`,
+          content: Buffer.from(JSON.stringify(metadata, null, 2)).toString('base64'),
+          branch,
+        }
+      )
+    );
+
+    // Upload code.html  
+    uploadPromises.push(
+      uploadFileWithRetry(
+        octokit,
+        {
+          owner,
+          repo,
+          path: `${pageName}/code.html`,
+          message: `Add HTML content for page: ${pageName}`,
+          content: Buffer.from(htmlContent).toString('base64'),
+          branch,
+        }
+      )
+    );
+
+    await Promise.all(uploadPromises);
 
     // Trigger een Vercel deployment (optioneel)
     if (process.env.VERCEL_DEPLOY_HOOK) {
@@ -140,6 +208,12 @@ export default async function handler(req, res) {
     
     if (error.status === 404) {
       return res.status(500).json({ error: 'Repository niet gevonden' });
+    }
+    
+    if (error.status === 409) {
+      return res.status(409).json({ 
+        error: 'Er was een conflict bij het opslaan. Probeer het opnieuw met een andere naam of wacht even.' 
+      });
     }
 
     res.status(500).json({ 
