@@ -54,7 +54,8 @@ export default function Home() {
       const result = await response.json();
 
       if (response.ok) {
-        setMessage(`Succes! Je pagina wordt aangemaakt. Na de volgende deploy is deze beschikbaar op: ${window.location.origin}/${pageName}`);
+        const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+        setMessage(`Succes! Je pagina wordt aangemaakt. Na de volgende deploy is deze beschikbaar op: ${currentOrigin}/${pageName}`);
         setMessageType('success');
         setFormData({
           pageName: '',
@@ -104,7 +105,7 @@ export default function Home() {
                 className={styles.input}
                 disabled={isSubmitting}
               />
-              <small>Preview URL: {window.location?.origin || 'https://jouw-site.vercel.app'}/{formData.pageName || 'pagina-naam'}</small>
+              <small>Preview URL: {typeof window !== 'undefined' ? window.location?.origin : 'https://jouw-site.vercel.app'}/{formData.pageName || 'pagina-naam'}</small>
             </div>
 
             <div className={styles.formGroup}>

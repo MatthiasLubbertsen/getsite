@@ -89,6 +89,16 @@ export async function getStaticPaths() {
     };
   } catch (error) {
     console.error('Error getting static paths:', error);
+    
+    // Als repository leeg is of niet bestaat, return lege paths
+    if (error.status === 404 || error.message?.includes('empty')) {
+      console.log('Repository is empty or not found, starting with empty paths');
+      return {
+        paths: [],
+        fallback: 'blocking'
+      };
+    }
+    
     return {
       paths: [],
       fallback: 'blocking'

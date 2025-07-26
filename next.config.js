@@ -8,11 +8,6 @@ const nextConfig = {
     isrMemoryCacheSize: 0, // Disable ISR cache in development
   },
 
-  // Vercel specifieke configuratie
-  env: {
-    CUSTOM_KEY: process.env.CUSTOM_KEY,
-  },
-
   // Headers voor beveiliging
   async headers() {
     return [
